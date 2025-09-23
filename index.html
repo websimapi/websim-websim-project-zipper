@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Websim Project Zipper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "jszip": "https://esm.sh/jszip@3.10.1"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Websim Project Zipper</h1>
+    <div class="actions">
+      <button id="show-docs" title="API docs">API</button>
+      <a class="gh" href="https://api.websim.com" target="_blank" rel="noopener">api.websim.com</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="panel">
+      <h2>Quick Zip</h2>
+      <form id="quick-form" class="row">
+        <input id="quick-input" placeholder="Paste a Websim URL, project ID, or user/slug (e.g. user123/sluggish-site)" />
+        <button type="submit">Zip & Download</button>
+      </form>
+      <p class="hint">
+        Works with: direct project ID, username/slug, or a full Websim URL to a project.
+      </p>
+    </section>
+
+    <section class="tabs">
+      <button class="tab active" data-tab="trending">Trending</button>
+      <button class="tab" data-tab="user">User Projects</button>
+      <button class="tab" data-tab="following">Following</button>
+      <button class="tab" data-tab="search">Search</button>
+    </section>
+
+    <section id="trending" class="panel tabpanel active">
+      <div class="toolbar">
+        <button id="refresh-trending">Refresh</button>
+      </div>
+      <div id="trending-list" class="grid"></div>
+    </section>
+
+    <section id="user" class="panel tabpanel">
+      <form id="user-form" class="row">
+        <input id="user-handle" placeholder="Enter username (exact)" />
+        <button type="submit">Load Projects</button>
+      </form>
+      <div id="user-list" class="grid"></div>
+    </section>
+
+    <section id="following" class="panel tabpanel">
+      <form id="following-form" class="row">
+        <input id="following-handle" placeholder="Enter your username" />
+        <button type="submit">Load Following Projects</button>
+      </form>
+      <div id="following-list" class="grid"></div>
+      <p class="hint">Some following data may require you to be signed in; only publicly accessible data is shown.</p>
+    </section>
+
+    <section id="search" class="panel tabpanel">
+      <form id="search-form" class="row">
+        <input id="search-query" placeholder="Search projects…" />
+        <select id="search-sort">
+          <option value="best">Best</option>
+          <option value="newest">Newest</option>
+          <option value="best_template">Best Templates</option>
+        </select>
+        <button type="submit">Search</button>
+      </form>
+      <div id="search-list" class="grid"></div>
+    </section>
+
+    <section id="progress" class="panel" hidden>
+      <h2 id="progress-title">Preparing download…</h2>
+      <div class="progressbar">
+        <div id="progress-bar" class="bar" style="width:0%"></div>
+      </div>
+      <p id="progress-detail" class="hint"></p>
+      <button id="cancel-btn" class="linklike">Cancel</button>
+    </section>
+  </main>
+
+  <dialog id="docs-dialog">
+    <form method="dialog">
+      <header class="dialog-header">
+        <h3>Websim API Docs</h3>
+        <button class="close">✕</button>
+      </header>
+      <pre id="docs-content" class="docs"></pre>
+    </form>
+  </dialog>
+
+  <footer class="footer">
+    <span>Simple, clean, fast.</span>
+  </footer>
+
+  <script type="module" src="./apiDocs.js"></script>
+  <script type="module" src="./api.js"></script>
+  <script type="module" src="./zip.js"></script>
+  <script type="module" src="./app.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+
