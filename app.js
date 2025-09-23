@@ -77,46 +77,12 @@ async function resolveProject(input) {
   // Accept: full URL, id, or user/slug
   try {
     const u = new URL(input);
-    
-    // Handle websim.ai URLs properly
-    if (u.hostname === 'websim.ai' || u.hostname.includes('websim')) {
-      const parts = u.pathname.split("/").filter(Boolean);
-      
-      // Pattern: /username/projects/slug or /username/slugs/slug
-      if (parts.length >= 3 && (parts[1] === "projects" || parts[1] === "slugs")) {
-        const [user, , slug] = parts;
-        try { 
-          return await api.getProjectBySlug(user, slug); 
-        } catch (e) {
-          console.warn("Failed to get by slug, trying fallbacks:", e.message);
-        }
-      }
-      
-      // Pattern: /c/project-id
-      if (parts.length >= 2 && parts[0] === "c") {
-        try { 
-          return await api.getProjectById(parts[1]); 
-        } catch (e) {
-          console.warn("Failed to get by project ID, trying fallbacks:", e.message);
-        }
-      }
-      
-      // Pattern: /username/project-slug (direct)
-      if (parts.length >= 2) {
-        const [user, slug] = parts;
-        try { 
-          return await api.getProjectBySlug(user, slug); 
-        } catch (e) {
-          console.warn("Failed direct user/slug, trying fallbacks:", e.message);
-        }
-      }
-      
-      // If all websim URL patterns fail, throw to avoid HTML scraping
-      throw new Error("Could not parse websim URL - use direct project ID or user/slug instead");
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length >= 3 && (parts[1] === "slugs" || parts[1] === "projects")) {
+      try { return await api.getProjectBySlug(parts[0], parts[2]); } catch { /* fall through */ }
     }
-    
-    // For non-websim URLs, treat as external and fall through to HTML scraping
-    throw new Error("treat as external URL");
+    // Avoid treating slugs as IDs which can 400; defer to guess below
+    throw new Error("treat as guess");
   } catch {
     if (input.includes("/")) {
       const [user, slug] = input.split("/");
@@ -136,9 +102,18 @@ async function collectAssetsFromHTML(pageUrl, html, onProgress, signal) {
     ["video[src]", "src"], ["audio[src]", "src"], ["link[rel=icon][href]", "href"]
   ];
   const urls = new Set();
+  const urlToElementMap = new Map();
+  
   for (const [q, attr] of sel) doc.querySelectorAll(q).forEach(el => {
-    const v = el.getAttribute(attr); if (v && !v.startsWith("data:")) urls.add(abs(v, pageUrl));
+    const v = el.getAttribute(attr); 
+    if (v && !v.startsWith("data:")) {
+      const absoluteUrl = abs(v, pageUrl);
+      urls.add(absoluteUrl);
+      if (!urlToElementMap.has(absoluteUrl)) urlToElementMap.set(absoluteUrl, []);
+      urlToElementMap.get(absoluteUrl).push({ element: el, attribute: attr });
+    }
   });
+  
   const list = [...urls];
   const total = list.length || 1;
   let done = 0;
@@ -149,30 +124,44 @@ async function collectAssetsFromHTML(pageUrl, html, onProgress, signal) {
     const cleanSearch = search ? `_${btoa(search).replace(/=+$/,"")}` : "";
     return `external/${host}${pathname}${cleanSearch}`;
   };
+  
   async function worker() {
     while (list.length) {
       if (signal?.aborted) throw new Error("cancelled");
       const u = list.shift();
       try {
         const data = await api.fetchAnyBytes(u);
-        results.push({ path: toPath(u), data });
+        const localPath = toPath(u);
+        results.push({ path: localPath, data });
+        
+        // Update HTML to reference local path
+        const elements = urlToElementMap.get(u) || [];
+        elements.forEach(({ element, attribute }) => {
+          element.setAttribute(attribute, localPath);
+        });
       } catch { /* skip failed asset */ }
       finally {
         done++; onProgress?.(done / total, `Fetched asset ${done}/${total}`);
       }
     }
   }
+  
   await Promise.all(Array.from({ length: Math.min(limit, list.length || 1) }).map(() => worker()));
-  return results;
+  
+  // Return both the updated HTML and the assets
+  return {
+    html: doc.documentElement.outerHTML,
+    assets: results
+  };
 }
 
 async function startZipFromUrl(rawUrl) {
   const signal = withProgress("Fetching page…");
   const pageUrl = rawUrl;
-  const html = await api.fetchAnyText(pageUrl);
+  const originalHtml = await api.fetchAnyText(pageUrl);
   updateProgress(0.1, "Collecting assets…");
-  const assets = await collectAssetsFromHTML(pageUrl, html, updateProgress, signal);
-  const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || "").trim();
+  const { html, assets } = await collectAssetsFromHTML(pageUrl, originalHtml, updateProgress, signal);
+  const title = (originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || "").trim();
   const project = { id: pageUrl, title: title || new URL(pageUrl).hostname, slug: "", created_by: { username: "" } };
   updateProgress(0.85, "Building zip…");
   const blob = await zipProject(project, { assets, html, revision: null }, updateProgress, signal);
@@ -204,16 +193,12 @@ async function startZip(projectLikeOrIdOrSlugInput) {
       try {
         project = await resolveProject(String(projectLikeOrIdOrSlugInput));
       } catch (e) {
-        // Only fall back to URL scraping for non-websim URLs
         if (isURL(String(projectLikeOrIdOrSlugInput))) {
-          const url = new URL(String(projectLikeOrIdOrSlugInput));
-          if (!url.hostname.includes('websim')) {
-            try {
-              await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
-              return;
-            } catch (urlError) {
-              throw new Error(`Failed to fetch external URL: ${urlError.message}`);
-            }
+          try {
+            await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
+            return;
+          } catch (urlError) {
+            throw new Error(`Failed to fetch URL: ${urlError.message}`);
           }
         }
         throw e;
@@ -253,18 +238,12 @@ async function startZip(projectLikeOrIdOrSlugInput) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch (e) {
-    // Only try URL fallback for non-websim URLs
     if (isURL(String(projectLikeOrIdOrSlugInput))) {
-      const url = new URL(String(projectLikeOrIdOrSlugInput));
-      if (!url.hostname.includes('websim')) {
-        try { 
-          await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); 
-          return; 
-        } catch (ee) { 
-          alert(`Download failed: ${ee.message}`); 
-        }
-      } else {
-        alert(`Download failed: ${e.message}. For websim URLs, try using the project ID or username/slug directly.`);
+      try { 
+        await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); 
+        return; 
+      } catch (ee) { 
+        alert(`Download failed: ${ee.message}`); 
       }
     } else {
       if (!String(e.message).includes("cancelled")) {
