@@ -78,13 +78,11 @@ async function resolveProject(input) {
   try {
     const u = new URL(input);
     const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length >= 3 && parts[1] === "slugs") {
-      return await api.getProjectBySlug(parts[0], parts[2]);
+    if (parts.length >= 3 && (parts[1] === "slugs" || parts[1] === "projects")) {
+      try { return await api.getProjectBySlug(parts[0], parts[2]); } catch { /* fall through */ }
     }
-    if (parts.length >= 3 && parts[1] === "projects") {
-      return await api.getProjectBySlug(parts[0], parts[2]);
-    }
-    return await api.getProjectById(parts.at(-1));
+    // Avoid treating slugs as IDs which can 400; defer to guess below
+    throw new Error("treat as guess");
   } catch {
     if (input.includes("/")) {
       const [user, slug] = input.split("/");
@@ -96,32 +94,60 @@ async function resolveProject(input) {
   }
 }
 
-async function collectAssets(projectId, version, onProgress, signal) {
-  const assetsIndex = await api.listAssets(projectId, version);
-  const files = assetsIndex?.assets || assetsIndex || [];
-  const total = files.length || 1;
+async function collectAssetsFromHTML(pageUrl, html, onProgress, signal) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const sel = [
+    ["script[src]", "src"], ["link[rel=stylesheet][href]", "href"],
+    ["img[src]", "src"], ["source[src]", "src"],
+    ["video[src]", "src"], ["audio[src]", "src"], ["link[rel=icon][href]", "href"]
+  ];
+  const urls = new Set();
+  for (const [q, attr] of sel) doc.querySelectorAll(q).forEach(el => {
+    const v = el.getAttribute(attr); if (v && !v.startsWith("data:")) urls.add(abs(v, pageUrl));
+  });
+  const list = [...urls];
+  const total = list.length || 1;
   let done = 0;
   const limit = 6;
-  const queue = [...files];
   const results = [];
+  const toPath = (u) => {
+    const { host, pathname, search } = new URL(u);
+    const cleanSearch = search ? `_${btoa(search).replace(/=+$/,"")}` : "";
+    return `external/${host}${pathname}${cleanSearch}`;
+  };
   async function worker() {
-    while (queue.length) {
+    while (list.length) {
       if (signal?.aborted) throw new Error("cancelled");
-      const f = queue.shift();
+      const u = list.shift();
       try {
-        const data = await api.getAssetContent(projectId, version, f.path || f);
-        results.push({ path: f.path || f, data });
-      } catch (e) {
-        console.warn("asset failed", f.path || f, e);
-      } finally {
-        done++;
-        onProgress?.(done / total, `Fetched ${f.path || f}`);
+        const data = await api.fetchAnyBytes(u);
+        results.push({ path: toPath(u), data });
+      } catch { /* skip failed asset */ }
+      finally {
+        done++; onProgress?.(done / total, `Fetched asset ${done}/${total}`);
       }
     }
   }
-  const workers = Array.from({ length: Math.min(limit, files.length || 1) }, worker);
-  await Promise.all(workers.map(fn => fn()));
+  await Promise.all(Array.from({ length: Math.min(limit, list.length || 1) }, worker).map(f => f()));
   return results;
+}
+
+async function startZipFromUrl(rawUrl) {
+  const signal = withProgress("Fetching page…");
+  const pageUrl = rawUrl;
+  const html = await api.fetchAnyText(pageUrl);
+  updateProgress(0.1, "Collecting assets…");
+  const assets = await collectAssetsFromHTML(pageUrl, html, updateProgress, signal);
+  const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || "").trim();
+  const project = { id: pageUrl, title: title || new URL(pageUrl).hostname, slug: "", created_by: { username: "" } };
+  updateProgress(0.85, "Building zip…");
+  const blob = await zipProject(project, { assets, html, revision: null }, updateProgress, signal);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(project.title || "page").replace(/[^\w\-\.\s]/g,"_")}.zip`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  endProgress();
 }
 
 async function startZipByProjectId(projectId) {
@@ -136,12 +162,20 @@ async function startZipByProjectId(projectId) {
 async function startZip(projectLikeOrIdOrSlugInput) {
   let project;
   try {
-    progressSection.hidden = false; // ensure visible early
+    progressSection.hidden = false;
     const signal = withProgress("Resolving project…");
     if (typeof projectLikeOrIdOrSlugInput === "object" && projectLikeOrIdOrSlugInput.id) {
       project = projectLikeOrIdOrSlugInput;
     } else {
-      project = await resolveProject(String(projectLikeOrIdOrSlugInput));
+      try {
+        project = await resolveProject(String(projectLikeOrIdOrSlugInput));
+      } catch (e) {
+        if (isURL(String(projectLikeOrIdOrSlugInput))) {
+          await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
+          return;
+        }
+        throw e;
+      }
     }
     const version = project.current_version ?? project.version ?? 1;
 
@@ -163,10 +197,10 @@ async function startZip(projectLikeOrIdOrSlugInput) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch (e) {
-    if (String(e.message).includes("cancelled")) {
-      // silent
+    if (isURL(String(projectLikeOrIdOrSlugInput))) {
+      try { await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); return; } catch (ee) { alert(`Download failed: ${ee.message}`); }
     } else {
-      alert(`Download failed: ${e.message}`);
+      if (!String(e.message).includes("cancelled")) alert(`Download failed: ${e.message}`);
     }
   } finally {
     endProgress();
@@ -245,3 +279,6 @@ $("#quick-form").addEventListener("submit", async (e) => {
   if (!v) return;
   await startZip(v);
 });
+
+function isURL(s) { try { new URL(s); return true; } catch { return false; } }
+function abs(u, base) { try { return new URL(u, base).toString(); } catch { return u; } }

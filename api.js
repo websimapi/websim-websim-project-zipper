@@ -6,6 +6,23 @@ async function fetchJSON(url, opts = {}) {
   return res.json();
 }
 
+async function fetchWithFallback(url, type = "text") {
+  const attempts = [
+    (u) => fetch(u),
+    (u) => fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`),
+    (u) => fetch(`https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`),
+    ...(type === "text" ? [(u) => fetch(`https://r.jina.ai/${u.startsWith("https://") ? "https://":"http://"}${u.replace(/^https?:\/\//,"")}`)] : [])
+  ];
+  for (const tryFetch of attempts) {
+    try {
+      const res = await tryFetch(url);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      return type === "arrayBuffer" ? new Uint8Array(await res.arrayBuffer()) : await res.text();
+    } catch { /* try next */ }
+  }
+  throw new Error(`Failed to fetch via fallbacks for ${url}`);
+}
+
 export const api = {
   async getTrending(offset = 0, limit = 50) {
     const u = new URL(`${BASE}/api/v1/feed/trending`);
@@ -67,5 +84,7 @@ export const api = {
       } catch { /* ignore and try next sort */ }
     }
     throw new Error("Project not found by guess");
-  }
+  },
+  fetchAnyText(url) { return fetchWithFallback(url, "text"); },
+  fetchAnyBytes(url) { return fetchWithFallback(url, "arrayBuffer"); }
 };
