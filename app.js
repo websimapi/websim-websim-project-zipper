@@ -128,7 +128,7 @@ async function collectAssetsFromHTML(pageUrl, html, onProgress, signal) {
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, list.length || 1) }, worker).map(f => f()));
+  await Promise.all(Array.from({ length: Math.min(limit, list.length || 1) }).map(() => worker()));
   return results;
 }
 
@@ -171,8 +171,12 @@ async function startZip(projectLikeOrIdOrSlugInput) {
         project = await resolveProject(String(projectLikeOrIdOrSlugInput));
       } catch (e) {
         if (isURL(String(projectLikeOrIdOrSlugInput))) {
-          await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
-          return;
+          try {
+            await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
+            return;
+          } catch (urlError) {
+            throw new Error(`Failed to fetch URL: ${urlError.message}`);
+          }
         }
         throw e;
       }
@@ -180,13 +184,27 @@ async function startZip(projectLikeOrIdOrSlugInput) {
     const version = project.current_version ?? project.version ?? 1;
 
     updateProgress(0.02, "Fetching HTML…");
-    const [html, revision] = await Promise.all([
-      api.getRevisionHTML(project.id, version).catch(() => ""),
-      api.getRevision(project.id, version).catch(() => null)
-    ]);
+    let html = "";
+    let revision = null;
+    try {
+      [html, revision] = await Promise.all([
+        api.getRevisionHTML(project.id, version).catch(() => ""),
+        api.getRevision(project.id, version).catch(() => null)
+      ]);
+    } catch (htmlError) {
+      console.warn("Failed to fetch HTML/revision:", htmlError.message);
+      html = "";
+      revision = null;
+    }
 
     updateProgress(0.05, "Listing assets…");
-    const assets = await collectAssets(project.id, version, updateProgress, currentAbort);
+    let assets = [];
+    try {
+      assets = await collectAssets(project.id, version, updateProgress, currentAbort);
+    } catch (assetError) {
+      console.warn("Failed to collect assets:", assetError.message);
+      assets = [];
+    }
 
     updateProgress(0.85, "Building zip…");
     const blob = await zipProject(project, { assets, html, revision }, updateProgress, currentAbort);
@@ -198,12 +216,46 @@ async function startZip(projectLikeOrIdOrSlugInput) {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch (e) {
     if (isURL(String(projectLikeOrIdOrSlugInput))) {
-      try { await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); return; } catch (ee) { alert(`Download failed: ${ee.message}`); }
+      try { 
+        await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); 
+        return; 
+      } catch (ee) { 
+        alert(`Download failed: ${ee.message}`); 
+      }
     } else {
-      if (!String(e.message).includes("cancelled")) alert(`Download failed: ${e.message}`);
+      if (!String(e.message).includes("cancelled")) {
+        alert(`Download failed: ${e.message}`);
+      }
     }
   } finally {
     endProgress();
+  }
+}
+
+async function collectAssets(projectId, version, onProgress, signal) {
+  try {
+    const data = await api.listAssets(projectId, version);
+    const assetList = data.assets || data.items || data || [];
+    const total = assetList.length || 1;
+    let done = 0;
+    const results = [];
+    
+    for (const asset of assetList) {
+      if (signal?.aborted) throw new Error("cancelled");
+      try {
+        const data = await api.getAssetContent(projectId, version, asset.path);
+        results.push({ path: asset.path, data });
+      } catch (assetError) {
+        console.warn(`Failed to fetch asset ${asset.path}:`, assetError.message);
+      } finally {
+        done++;
+        onProgress?.(done / total, `Collected asset ${done}/${total}`);
+      }
+    }
+    return results;
+  } catch (error) {
+    console.warn("Failed to list assets:", error.message);
+    return [];
   }
 }
 
