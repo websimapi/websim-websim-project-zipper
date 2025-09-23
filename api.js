@@ -53,6 +53,19 @@ export const api = {
     u.searchParams.set("offset", offset);
     u.searchParams.set("limit", limit);
     return fetchJSON(u.toString());
+  },
+  async findProjectByGuess(term) {
+    const sorts = ["best", "newest", "best_template"];
+    for (const s of sorts) {
+      try {
+        const data = await this.searchFeed(s, term, { limit: 10 });
+        const items = data.items || data.results || data || [];
+        const projects = items.map(x => x.project || x).filter(Boolean);
+        const exact = projects.find(p => p.slug === term || String(p.id) === term);
+        const chosen = exact || projects[0];
+        if (chosen?.id) return this.getProjectById(chosen.id);
+      } catch { /* ignore and try next sort */ }
+    }
+    throw new Error("Project not found by guess");
   }
 };
-

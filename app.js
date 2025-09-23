@@ -78,22 +78,21 @@ async function resolveProject(input) {
   try {
     const u = new URL(input);
     const parts = u.pathname.split("/").filter(Boolean);
-    // Try forms like /{user}/slugs/{slug} or /{user}/projects/{slug}
     if (parts.length >= 3 && parts[1] === "slugs") {
-      return api.getProjectBySlug(parts[0], parts[2]);
+      return await api.getProjectBySlug(parts[0], parts[2]);
     }
     if (parts.length >= 3 && parts[1] === "projects") {
-      return api.getProjectBySlug(parts[0], parts[2]);
+      return await api.getProjectBySlug(parts[0], parts[2]);
     }
-    // Fallback: if it looks like an id at the end
-    return api.getProjectById(parts.at(-1));
+    return await api.getProjectById(parts.at(-1));
   } catch {
-    // Not a URL
     if (input.includes("/")) {
       const [user, slug] = input.split("/");
-      return api.getProjectBySlug(user, slug);
+      try { return await api.getProjectBySlug(user, slug); } catch { /* fallback below */ }
     }
-    return api.getProjectById(input);
+    try { return await api.getProjectById(input); } catch {
+      return await api.findProjectByGuess(input);
+    }
   }
 }
 
@@ -246,4 +245,3 @@ $("#quick-form").addEventListener("submit", async (e) => {
   if (!v) return;
   await startZip(v);
 });
-
