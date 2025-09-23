@@ -77,12 +77,46 @@ async function resolveProject(input) {
   // Accept: full URL, id, or user/slug
   try {
     const u = new URL(input);
-    const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length >= 3 && (parts[1] === "slugs" || parts[1] === "projects")) {
-      try { return await api.getProjectBySlug(parts[0], parts[2]); } catch { /* fall through */ }
+    
+    // Handle websim.ai URLs properly
+    if (u.hostname === 'websim.ai' || u.hostname.includes('websim')) {
+      const parts = u.pathname.split("/").filter(Boolean);
+      
+      // Pattern: /username/projects/slug or /username/slugs/slug
+      if (parts.length >= 3 && (parts[1] === "projects" || parts[1] === "slugs")) {
+        const [user, , slug] = parts;
+        try { 
+          return await api.getProjectBySlug(user, slug); 
+        } catch (e) {
+          console.warn("Failed to get by slug, trying fallbacks:", e.message);
+        }
+      }
+      
+      // Pattern: /c/project-id
+      if (parts.length >= 2 && parts[0] === "c") {
+        try { 
+          return await api.getProjectById(parts[1]); 
+        } catch (e) {
+          console.warn("Failed to get by project ID, trying fallbacks:", e.message);
+        }
+      }
+      
+      // Pattern: /username/project-slug (direct)
+      if (parts.length >= 2) {
+        const [user, slug] = parts;
+        try { 
+          return await api.getProjectBySlug(user, slug); 
+        } catch (e) {
+          console.warn("Failed direct user/slug, trying fallbacks:", e.message);
+        }
+      }
+      
+      // If all websim URL patterns fail, throw to avoid HTML scraping
+      throw new Error("Could not parse websim URL - use direct project ID or user/slug instead");
     }
-    // Avoid treating slugs as IDs which can 400; defer to guess below
-    throw new Error("treat as guess");
+    
+    // For non-websim URLs, treat as external and fall through to HTML scraping
+    throw new Error("treat as external URL");
   } catch {
     if (input.includes("/")) {
       const [user, slug] = input.split("/");
@@ -170,12 +204,16 @@ async function startZip(projectLikeOrIdOrSlugInput) {
       try {
         project = await resolveProject(String(projectLikeOrIdOrSlugInput));
       } catch (e) {
+        // Only fall back to URL scraping for non-websim URLs
         if (isURL(String(projectLikeOrIdOrSlugInput))) {
-          try {
-            await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
-            return;
-          } catch (urlError) {
-            throw new Error(`Failed to fetch URL: ${urlError.message}`);
+          const url = new URL(String(projectLikeOrIdOrSlugInput));
+          if (!url.hostname.includes('websim')) {
+            try {
+              await startZipFromUrl(String(projectLikeOrIdOrSlugInput));
+              return;
+            } catch (urlError) {
+              throw new Error(`Failed to fetch external URL: ${urlError.message}`);
+            }
           }
         }
         throw e;
@@ -215,12 +253,18 @@ async function startZip(projectLikeOrIdOrSlugInput) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch (e) {
+    // Only try URL fallback for non-websim URLs
     if (isURL(String(projectLikeOrIdOrSlugInput))) {
-      try { 
-        await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); 
-        return; 
-      } catch (ee) { 
-        alert(`Download failed: ${ee.message}`); 
+      const url = new URL(String(projectLikeOrIdOrSlugInput));
+      if (!url.hostname.includes('websim')) {
+        try { 
+          await startZipFromUrl(String(projectLikeOrIdOrSlugInput)); 
+          return; 
+        } catch (ee) { 
+          alert(`Download failed: ${ee.message}`); 
+        }
+      } else {
+        alert(`Download failed: ${e.message}. For websim URLs, try using the project ID or username/slug directly.`);
       }
     } else {
       if (!String(e.message).includes("cancelled")) {
